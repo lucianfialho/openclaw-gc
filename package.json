@@ -1,0 +1,49 @@
+{
+  "name": "@openclaw/gc",
+  "version": "0.1.0",
+  "description": "Garbage collector and guardrails for OpenClaw AI agents",
+  "type": "module",
+  "bin": {
+    "ocgc": "./dist/cli/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./plugin": "./dist/plugin/index.js",
+    "./api": "./dist/api/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli/index.js",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "openclaw",
+    "gc",
+    "garbage-collector",
+    "guardrails",
+    "ai-agent",
+    "safety"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.8.0",
+    "chalk": "^5.4.1",
+    "chokidar": "^4.0.3",
+    "commander": "^13.1.0",
+    "fastify": "^5.2.1",
+    "minimatch": "^10.2.4",
+    "ora": "^8.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/minimatch": "^5.1.2",
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.0"
+  }
+}
