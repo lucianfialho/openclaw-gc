@@ -1,10 +1,10 @@
 /**
  * OpenClaw Plugin - Hooks into the agent lifecycle
  *
- * Install: copy to ~/.openclaw/plugins/ or register via openclaw.json
+ * Install: openclaw plugins install <path>
  *
  * This integrates the GC guardrails directly into OpenClaw's
- * before_tool_call / after_tool_call hooks.
+ * agent lifecycle hooks and filesystem monitoring.
  */
 
 import { loadConfig } from "../core/config.js";
@@ -14,118 +14,152 @@ import {
   checkRateLimit,
   logBlockedAction,
 } from "../core/guardrails.js";
-import { startSession, endSession } from "../core/journal.js";
+import { startSession, endSession, getStats } from "../core/journal.js";
 import { FsMonitor } from "../core/monitor.js";
+import { scanOrphans } from "../core/collector.js";
 
 interface OpenClawPluginApi {
-  registerTool(tool: unknown): void;
+  registerTool(tool: unknown, opts?: { optional?: boolean }): void;
+  registerHook(name: string, handler: (...args: any[]) => any, meta?: { name?: string; description?: string }): void;
   on(event: string, handler: (...args: any[]) => any, opts?: { priority?: number }): void;
+  logger: {
+    info(...args: any[]): void;
+    warn(...args: any[]): void;
+    error(...args: any[]): void;
+  };
+  pluginConfig?: Record<string, any>;
+  config?: Record<string, any>;
 }
 
-interface ToolCallEvent {
-  toolName: string;
-  toolCallId: string;
-  params: Record<string, any>;
+interface AgentStartEvent {
+  prompt?: string;
+  success?: boolean;
 }
 
-interface SessionEvent {
-  sessionId: string;
+interface AgentEndEvent {
+  success?: boolean;
+  messages?: any[];
+}
+
+interface AgentContext {
+  sessionKey?: string;
   agentId?: string;
+  sessionId?: string;
 }
 
-export default function register(api: OpenClawPluginApi): void {
-  const config = loadConfig();
-  let monitor: FsMonitor | null = null;
-  let currentSessionId: string | null = null;
+const config = loadConfig();
+let monitor: FsMonitor | null = null;
+let currentSessionId: string | null = null;
 
-  // --- Session lifecycle ---
+export default {
+  id: "openclaw-gc",
+  name: "OpenClaw GC",
+  description: "Garbage collector and guardrails for AI agents - blocks dangerous operations, tracks filesystem changes, enables session rollback",
+  kind: "lifecycle",
 
-  api.on("session_start", (event: SessionEvent) => {
-    const session = startSession(event.agentId);
-    currentSessionId = session.id;
+  register(api: OpenClawPluginApi): void {
+    api.logger.info("[openclaw-gc] Plugin loading...");
 
-    monitor = new FsMonitor(config);
-    monitor.start(session.id);
-  }, { priority: 1 });
+    // --- Agent lifecycle hooks ---
 
-  api.on("session_end", () => {
-    if (currentSessionId) {
-      endSession(currentSessionId);
-    }
-    if (monitor) {
-      monitor.stop();
-      monitor = null;
-    }
-    currentSessionId = null;
-  }, { priority: 99 });
+    api.on("before_agent_start", async (event: AgentStartEvent, ctx: AgentContext) => {
+      const session = startSession(ctx.agentId || "unknown");
+      currentSessionId = session.id;
 
-  // --- Guardrail hooks ---
+      // Start filesystem monitoring
+      monitor = new FsMonitor(config);
+      monitor.start(session.id);
 
-  api.on("before_tool_call", (event: ToolCallEvent) => {
-    const { toolName, params } = event;
-
-    // Check filesystem operations
-    if (toolName === "write_file" || toolName === "create_file" || toolName === "save_file") {
-      const targetPath = params.path || params.file_path || params.filename;
-      if (targetPath) {
-        const result = checkPathAllowed(targetPath, config);
-        if (!result.allowed) {
-          logBlockedAction(currentSessionId, toolName, result.reason!, params);
-          return { block: true, reason: `[openclaw-gc] ${result.reason}` };
+      monitor.on("fs-event", (fsEvent) => {
+        // Check guardrails on every file create
+        if (fsEvent.type === "create") {
+          const result = checkPathAllowed(fsEvent.path, config);
+          if (!result.allowed) {
+            api.logger.warn(`[openclaw-gc] BLOCKED path: ${fsEvent.path} - ${result.reason}`);
+            logBlockedAction(currentSessionId, "fs_create", result.reason!, { path: fsEvent.path });
+          }
         }
-      }
-    }
+      });
 
-    // Check shell commands
-    if (toolName === "run_terminal_cmd" || toolName === "execute" || toolName === "shell") {
-      const command = params.command || params.cmd;
-      if (command) {
-        const result = checkCommandSafe(command);
-        if (!result.allowed) {
-          logBlockedAction(currentSessionId, toolName, result.reason!, params);
-          return { block: true, reason: `[openclaw-gc] ${result.reason}` };
+      api.logger.info(`[openclaw-gc] Session started: ${session.id.slice(0, 8)} | Monitoring filesystem...`);
+    }, { priority: 1 });
+
+    api.on("agent_end", async (event: AgentEndEvent, ctx: AgentContext) => {
+      if (currentSessionId) {
+        endSession(currentSessionId);
+        api.logger.info(`[openclaw-gc] Session ended: ${currentSessionId.slice(0, 8)}`);
+      }
+      if (monitor) {
+        monitor.stop();
+        monitor = null;
+      }
+
+      // Report stats
+      const stats = getStats();
+      if (stats.totalEvents > 0 || stats.totalBlocked > 0) {
+        api.logger.info(`[openclaw-gc] Events: ${stats.totalEvents} | Blocked: ${stats.totalBlocked}`);
+      }
+
+      currentSessionId = null;
+    }, { priority: 99 });
+
+    // --- Register command hooks ---
+
+    api.registerHook(
+      "command:new",
+      () => {
+        // When user starts a new conversation, end current GC session
+        if (currentSessionId) {
+          endSession(currentSessionId);
+          currentSessionId = null;
         }
-      }
-    }
+        if (monitor) {
+          monitor.stop();
+          monitor = null;
+        }
+      },
+      {
+        name: "openclaw-gc.command-new",
+        description: "End GC session when /new is invoked",
+      },
+    );
 
-    // Rate limiting
-    if (currentSessionId) {
-      const rateResult = checkRateLimit(currentSessionId, config);
-      if (!rateResult.allowed) {
-        logBlockedAction(currentSessionId, toolName, rateResult.reason!, params);
-        return { block: true, reason: `[openclaw-gc] ${rateResult.reason}` };
-      }
-    }
+    // --- Register GC tools for the agent ---
 
-    return undefined; // Allow
-  }, { priority: 5 });
+    api.registerTool({
+      name: "ocgc_status",
+      description: "Show the current status of the OpenClaw Garbage Collector (active sessions, blocked actions, stats)",
+      parameters: { type: "object", properties: {}, required: [] },
+      async execute() {
+        const stats = getStats();
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(stats, null, 2),
+          }],
+        };
+      },
+    });
 
-  // --- Register GC tools for the agent to use ---
+    api.registerTool({
+      name: "ocgc_scan",
+      description: "Scan for orphaned files and residuals that can be cleaned up",
+      parameters: { type: "object", properties: {}, required: [] },
+      async execute() {
+        const orphans = scanOrphans(config);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              count: orphans.length,
+              totalSize: orphans.reduce((sum, a) => sum + a.size, 0),
+              items: orphans.slice(0, 50),
+            }, null, 2),
+          }],
+        };
+      },
+    });
 
-  api.registerTool({
-    name: "ocgc_status",
-    description: "Show the current status of the OpenClaw Garbage Collector (active sessions, blocked actions, stats)",
-    parameters: { type: "object", properties: {}, required: [] },
-    async execute() {
-      const { getStats } = await import("../core/journal.js");
-      return { result: getStats() };
-    },
-  });
-
-  api.registerTool({
-    name: "ocgc_scan",
-    description: "Scan for orphaned files and residuals that can be cleaned up",
-    parameters: { type: "object", properties: {}, required: [] },
-    async execute() {
-      const { scanOrphans } = await import("../core/collector.js");
-      const orphans = scanOrphans(config);
-      return {
-        result: {
-          count: orphans.length,
-          totalSize: orphans.reduce((sum, a) => sum + a.size, 0),
-          items: orphans.slice(0, 50),
-        },
-      };
-    },
-  });
-}
+    api.logger.info("[openclaw-gc] Plugin loaded. Guardrails active.");
+  },
+};

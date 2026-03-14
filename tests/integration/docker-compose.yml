@@ -1,0 +1,13 @@
+services:
+  openclaw-gc-test:
+    build:
+      context: ../..
+      dockerfile: tests/integration/Dockerfile
+    container_name: openclaw-gc-test
+    stdin_open: true
+    tty: true
+    environment:
+      - HOME=/root
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "18790:18790"

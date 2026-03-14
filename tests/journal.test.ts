@@ -6,10 +6,10 @@ describe("journal", () => {
   beforeEach(() => {
     // Clear sessions between tests to avoid leaking state
     const db = getDb();
-    db.exec("DELETE FROM sessions");
-    db.exec("DELETE FROM fs_events");
     db.exec("DELETE FROM blocked_actions");
+    db.exec("DELETE FROM fs_events");
     db.exec("DELETE FROM gc_runs");
+    db.exec("DELETE FROM sessions");
   });
 
   afterEach(() => {

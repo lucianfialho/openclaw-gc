@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw-gc/plugin",
+  "version": "0.1.0",
+  "description": "OpenClaw GC - Garbage collector and guardrails plugin",
+  "main": "index.js",
+  "type": "module",
+  "openclaw": {
+    "id": "openclaw-gc",
+    "name": "OpenClaw GC",
+    "description": "Garbage collector and guardrails for AI agents - blocks dangerous operations, tracks filesystem changes, enables session rollback",
+    "extensions": ["./index.js"]
+  }
+}

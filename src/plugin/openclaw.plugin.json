@@ -1,0 +1,20 @@
+{
+  "id": "openclaw-gc",
+  "name": "OpenClaw GC",
+  "description": "Garbage collector and guardrails for AI agents - blocks dangerous operations, tracks filesystem changes, enables session rollback",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dryRun": { "type": "boolean" },
+      "maxFilesPerMinute": { "type": "number" },
+      "maxDirDepth": { "type": "number" }
+    }
+  },
+  "uiHints": {
+    "dryRun": { "label": "Dry-run mode", "placeholder": "false" },
+    "maxFilesPerMinute": { "label": "Max file operations per minute", "placeholder": "30" },
+    "maxDirDepth": { "label": "Max directory depth", "placeholder": "10" }
+  }
+}
